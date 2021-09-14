@@ -75,7 +75,6 @@ class AnalyzeDB:
                 type_diff['INSERT'].append(i)
             else:
                 type_diff['DELETE'].append(i)
-        print(type_diff['DELETE'])
         return type_diff
 
     def get_diff_insert(self, list_obj: list):
@@ -84,6 +83,7 @@ class AnalyzeDB:
         :param list_obj:
         :return:
         """
+
         pass
 
     def get_diff_update(self):
