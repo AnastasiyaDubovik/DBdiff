@@ -1,5 +1,6 @@
 import psycopg2
 import collections
+import pandas
 from psycopg2 import sql
 from configparser import ConfigParser
 
@@ -43,6 +44,18 @@ class ConnectDB:
         conn.close()
         return result_query
 
+    def get_dataframe(self, query: str):
+        param_conn = self._get_param_db()
+        conn = psycopg2.connect(**param_conn)
+        cur = conn.cursor()
+        cur.execute(query)
+        result_query = cur.fetchall()
+        print(cur.description)
+        df = pandas.DataFrame(result_query, columns=[val[0] for val in cur.description])
+        conn.commit()
+        conn.close()
+        return df
+
 
 class AnalyzeDB:
     def __init__(self, source_db: ConnectDB, target__db: ConnectDB):
@@ -50,53 +63,71 @@ class AnalyzeDB:
         self.target_db = target__db
 
     def get_diff_table(self):
-        query = "SELECT schemaname,relname, n_tup_ins,n_tup_upd, n_tup_del,n_dead_tup FROM pg_stat_user_tables " \
+        query = "SELECT schemaname,relname, n_tup_ins,n_tup_upd, n_tup_del FROM pg_stat_user_tables " \
                 "WHERE relname NOT IN ('databasechangelog','databasechangeloglock') "
         target_list = self.target_db.get_result_query(query)
         source_list = self.source_db.get_result_query(query)
         diff_value = list(set(target_list) - set(source_list))
         return [name_obj[:2] for name_obj in diff_value]
 
-    def choose_operation(self, list_table: list):
+    def operator_dml(self):
         """
-        Сравнивает количество строк в таблицах source и target.
-        В зависимости от сравнения будет выбран опратор INSERT, DELETE или UPDATE.
-        :param list_table:
-        :return:
+        Записывает в словарь какие изменения были сделаны с данными в таблице(INSERT, UPDATE, DELETE).
+        Сравнение на основе системной таблицы pg_stat_user_tables.
+        Замечание: не совсем корректно обрабатываеться оператор DELETE в pg_stat_user_tables
+        (Добовляет значения к n_tup_del, даже если транзакция не завершина)
+        :return: dict -> {(schema, name table): [INSERT, UPDATE,DELETE]}
         """
-        type_diff = collections.defaultdict(list)
-        for i in list_table:
-            query_count = sql.SQL("SELECT count(*) FROM {}.{}").format(sql.Identifier(i[0]), sql.Identifier(i[1]))
-            count_target = self.target_db.get_result_query(query_count, False)
-            count_source = self.source_db.get_result_query(query_count, False)
-            if int(count_source[0]) == int(count_target[0]):
-                type_diff['UPDATE'].append(i)
-            elif int(count_target[0]) > int(count_source[0]):
-                type_diff['INSERT'].append(i)
-            else:
-                type_diff['DELETE'].append(i)
-        return type_diff
+        change_parameters = collections.defaultdict(list)
+        name_table = self.get_diff_table()
 
-    def get_diff_insert(self, list_obj: list):
-        """
-        Возвращает данные которые нужно будет записать в source базу данных.
-        :param list_obj:
-        :return:
-        """
+        for i in name_table:
+            type_ddm = []
+            stmt = sql.SQL("SELECT n_tup_ins,n_tup_upd, n_tup_del FROM pg_stat_user_tables "
+                           "WHERE schemaname = {} AND relname = {}").format(sql.Literal(i[0]), sql.Literal(i[1]))
+            res_target = self.target_db.get_result_query(stmt, False)
+            res_source = self.source_db.get_result_query(stmt, False)
+            if res_target[0] != res_source[0]:
+                type_ddm.append('INSERT')
+            if res_target[1] != res_source[1]:
+                type_ddm.append('UPDATE')
+            if res_target[2] != res_source[2]:
+                type_ddm.append('DELETE')
+            change_parameters[i] = type_ddm
+        return change_parameters
 
+    def write_insert(self):
         pass
 
-    def get_diff_update(self):
-        pass
+    def distributor_dmm(self):
+        dict_obj = self.operator_dml()
+        for key, val in dict_obj.items():
+            if 'INSERT' in val:
+                pass
 
-    def get_diff_delete(self):
-        pass
+    def compare_dataframes(self, which=None):
+        stmt = 'SELECT * FROM objects.fr_group'
+        df_target = self.target_db.get_dataframe(stmt)
+        df_source = self.source_db.get_dataframe(stmt)
+        compression_df = df_source.merge(df_target, indicator=True, how="outer")
+        if which is None:
+            diff_df = compression_df[compression_df['_merge'] != 'both']
+        else:
+            diff_df = compression_df[compression_df['_merge'] == which]
+        print(diff_df)
+
+
+#        compare_df = df_target.compare(df_source[:len(df_target)], align_axis='rows')
+#        print(df_source[:len(df_target)])
 
 
 if __name__ == '__main__':
     source__db = ConnectDB('source')
     target_db = ConnectDB('target')
     test_analyze = AnalyzeDB(source__db, target_db)
-    res = test_analyze.get_diff_table()
-    dict_res = test_analyze.choose_operation(res)
-    print(dict_res)
+    test_analyze.compare_dataframes()
+#    test = test_analyze.operator_ddm()
+#    print(test.items())
+#   res = test_analyze.get_diff_table()
+#  dict_res = test_analyze.choose_operation(res)
+#  print(dict_res['INSERT'])
